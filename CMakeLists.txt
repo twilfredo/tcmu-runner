@@ -104,6 +104,7 @@ add_executable(tcmu-runner
   target.c
   alua.c
   scsi.c
+  spdm.c
   main.c
   tcmuhandler-generated.c
   )
