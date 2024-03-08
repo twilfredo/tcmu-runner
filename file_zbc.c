@@ -2219,6 +2219,7 @@ static int zbc_handle_cmd(struct tcmu_device *dev, struct tcmur_cmd *tcmur_cmd)
 	switch (cmd->cdb[0]) {
 
 	case INQUIRY:
+		tcmu_dev_info(dev, "ZBC: Inquiry Received\n");
 		return zbc_inquiry(dev, cmd);
 
 	case TEST_UNIT_READY:
@@ -2260,9 +2261,15 @@ static int zbc_handle_cmd(struct tcmu_device *dev, struct tcmur_cmd *tcmur_cmd)
 	case SYNCHRONIZE_CACHE:
 	case SYNCHRONIZE_CACHE_16:
 		return zbc_flush(dev, cmd);
-
+	case SECURITY_PROTOCOL_IN:
+		tcmu_dev_info(dev, "ZBC: Handling Security In\n");
+		return 0;
+	case SECURITY_PROTOCOL_OUT:
+		tcmu_dev_info(dev, "ZBC: Handling Security Out\n");
+		return 0;
 	}
 
+	tcmu_dev_err(dev, "ZBC: Unhandled op code: 0x%x\n", cmd->cdb[0]);
 	return TCMU_STS_NOT_HANDLED;
 }
 

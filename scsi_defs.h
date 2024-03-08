@@ -29,10 +29,18 @@
 #define SERVICE_ACTION_IN_16            0x9e
 #define READ_DVD_STRUCTURE              0xad
 #define MECHANISM_STATUS                0xbd
+#define SECURITY_PROTOCOL_IN		0xa2
+#define SECURITY_PROTOCOL_OUT		0xb5
 #define MAINTENANCE_IN			0xa3
 #define MAINTENANCE_OUT			0xa4
 #define MI_REPORT_TARGET_PGS		0x0a
 #define MO_SET_TARGET_PGS		0x0a
+
+/*
+* SCSI Security Protocols
+*/
+#define SECURITY_PROTOCOL_INFORMATION	0x00
+#define	SECURITY_PROTOCOL_SPDM			0xE8
 
 /*
  * Receive Copy Results Sevice Actions
