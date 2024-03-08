@@ -205,6 +205,7 @@ if (with-zbc)
     SHARED
     scsi.c
     file_zbc.c
+    spdm.c
     )
   set_target_properties(handler_file_zbc
     PROPERTIES

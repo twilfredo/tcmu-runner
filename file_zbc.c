@@ -32,6 +32,7 @@
 #include "libtcmu.h"
 #include "tcmu-runner.h"
 #include "tcmur_device.h"
+#include "spdm.h"
 
 /*
  * SCSI commands.
@@ -247,6 +248,7 @@ struct zbc_dev_config {
 	size_t			zone_size;
 	unsigned int		conv_num;
 	unsigned int		open_num;
+	unsigned int	spdm_port;
 
 };
 
@@ -281,6 +283,7 @@ struct zbc_dev {
 	unsigned int		nr_open_zones;
 	unsigned int		nr_imp_open;
 	unsigned int		nr_exp_open;
+	int					spdm_socket;
 
 };
 
@@ -339,6 +342,18 @@ static char *zbc_parse_conv(char *val, struct zbc_dev_config *cfg, char **msg)
 	return end;
 }
 
+static char *zbc_parse_spdm(char *val, struct zbc_dev_config *cfg, char **msg)
+{
+	char *end = val;
+
+	cfg->spdm_port = strtoul(val, &end, 10);
+	if (!cfg->spdm_port) {
+		*msg = "Invalid port defined for SPDM";
+		return NULL;
+	}
+	return end;
+}
+
 static char *zbc_parse_open(char *val, struct zbc_dev_config *cfg, char **msg)
 {
 	char *end;
@@ -352,7 +367,7 @@ static char *zbc_parse_open(char *val, struct zbc_dev_config *cfg, char **msg)
 	return end;
 }
 
-#define ZBC_PARAMS	5
+#define ZBC_PARAMS	6
 
 struct zbc_dev_config_param {
 	char	*name;
@@ -363,6 +378,7 @@ struct zbc_dev_config_param {
 	{ "zsize-",	zbc_parse_zsize	},
 	{ "conv-",	zbc_parse_conv	},
 	{ "open-",	zbc_parse_open	},
+	{ "spdm-",	zbc_parse_spdm	}
 };
 
 /*
@@ -898,6 +914,16 @@ static int zbc_open(struct tcmu_device *dev, bool reopen)
 	ret = zbc_open_backstore(dev);
 	if (ret)
 		goto err;
+
+	if (zdev->cfg.spdm_port != 0) {
+		// Establish a socket connection to spdm-utils
+		zdev->spdm_socket =  spdm_socket_connect(dev, zdev->cfg.spdm_port);
+		if (zdev->spdm_socket <= 0) {
+			tcmu_dev_err(dev, "could not connect to spdm responder server on"
+								"port: %d\n", zdev->cfg.spdm_port);
+			tcmu_dev_warn(dev, "SPDM support disabled\n");
+		}
+	}
 
 	return 0;
 
@@ -2205,6 +2231,88 @@ static int zbc_flush(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	return TCMU_STS_OK;
 }
 
+static int zbc_recv_spdm_response(struct tcmu_device *dev,
+				  struct tcmulib_cmd *cmd)
+{
+	struct zbc_dev *zdev = tcmur_dev_get_private(dev);
+	uint32_t recvd;
+
+	if (!zdev)
+		return TCMU_STS_NOT_HANDLED;
+
+	if (zdev->spdm_socket <= 0)
+		return TCMU_STS_NOT_HANDLED;
+
+	// Require an io buffer of atleast SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE
+	// to ensure receive does not overflow.
+	if (cmd->iovec->iov_len < SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE)
+		return ENOMEM;
+
+	// TODO: Fixup transport code
+	recvd = spdm_recv_response(zdev->dev, zdev->spdm_socket, 0x02,
+				   cmd->iovec->iov_base,
+				   SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE);
+
+	if (!recvd)
+		return TCMU_STS_NOT_HANDLED;
+
+	// Consume iovec to mimic tcmu_memcpy_into_iovec()
+	cmd->iovec->iov_base += recvd;
+	cmd->iovec->iov_len -= recvd;
+	
+	return TCMU_STS_OK;
+}
+
+static int zbc_send_spdm_request(struct tcmu_device *dev,
+				 struct tcmulib_cmd *cmd)
+{
+	struct zbc_dev *zdev = tcmur_dev_get_private(dev);
+	uint8_t *cdb = cmd->cdb;
+	uint32_t alloc_len = tcmu_cdb_get_xfer_length(cdb);
+	bool res;
+
+	if (!zdev)
+		return TCMU_STS_NOT_HANDLED;
+
+	if (zdev->spdm_socket <= 0)
+		return TCMU_STS_NOT_HANDLED;
+
+	// TODO: Fixup transport code
+	res = spdm_send_request(zdev->dev, zdev->spdm_socket, 0x02,
+				cmd->iovec->iov_base, alloc_len);
+
+	if (!res) // TODO SPDM ERR
+		return TCMU_STS_NOT_HANDLED;
+
+	return TCMU_STS_OK;
+}
+
+static int zbc_sec_prot_info(struct tcmu_device *dev,
+				  struct tcmulib_cmd *cmd)
+{
+	struct zbc_dev *zdev = tcmur_dev_get_private(dev);
+	size_t alloc_len;
+	uint8_t buf[12];
+	alloc_len = tcmu_cdb_get_xfer_length(cmd->cdb);
+	tcmu_dev_dbg(dev, "TCMU: zbc_sec_prot_info)\n");
+	if (alloc_len < sizeof(buf))
+		return TCMU_STS_NOT_HANDLED;
+
+	memset(buf, 0, sizeof(buf));
+
+	// As per SFSC: Table 27: Supported security protocols
+	buf[7] = 2;
+	buf[8] = 0x00;
+
+	// An SPDM responder is active
+	if (zdev->spdm_socket > 0)
+		buf[9] = 0xE8; // DMTF Security Protocol and Data Model
+
+	tcmu_memcpy_into_iovec(cmd->iovec, cmd->iov_cnt, buf, sizeof(buf));
+
+	return TCMU_STS_OK;
+}
+
 /*
  * Handle command emulation.
  * Return scsi status or TCMU_STS_NOT_HANDLED
@@ -2219,7 +2327,6 @@ static int zbc_handle_cmd(struct tcmu_device *dev, struct tcmur_cmd *tcmur_cmd)
 	switch (cmd->cdb[0]) {
 
 	case INQUIRY:
-		tcmu_dev_info(dev, "ZBC: Inquiry Received\n");
 		return zbc_inquiry(dev, cmd);
 
 	case TEST_UNIT_READY:
@@ -2262,14 +2369,30 @@ static int zbc_handle_cmd(struct tcmu_device *dev, struct tcmur_cmd *tcmur_cmd)
 	case SYNCHRONIZE_CACHE_16:
 		return zbc_flush(dev, cmd);
 	case SECURITY_PROTOCOL_IN:
-		tcmu_dev_info(dev, "ZBC: Handling Security In\n");
-		return 0;
+		tcmu_dev_dbg(dev, "ZBC: Handling Security In (Target->Initiator)\n");
+		switch (cmd->cdb[1]) {
+
+		case SECURITY_PROTOCOL_INFORMATION:
+			return zbc_sec_prot_info(dev, cmd);
+
+		case SECURITY_PROTOCOL_SPDM:
+			tcmu_dev_dbg(dev, "SPDM: Receiving response from responder\n");
+			return zbc_recv_spdm_response(dev, cmd);
+
+		}
 	case SECURITY_PROTOCOL_OUT:
-		tcmu_dev_info(dev, "ZBC: Handling Security Out\n");
+		tcmu_dev_dbg(dev, "ZBC: Handling Security Out (Initiator->Target)\n");
+		switch (cmd->cdb[1]) {
+
+		case SECURITY_PROTOCOL_SPDM:
+			tcmu_dev_dbg(dev, "SPDM: Sending request to responder\n");
+			return zbc_send_spdm_request(dev, cmd);
+
+		}
 		return 0;
 	}
 
-	tcmu_dev_err(dev, "ZBC: Unhandled op code: 0x%x\n", cmd->cdb[0]);
+	tcmu_dev_warn(dev, "ZBC: Unhandled op code: 0x%x\n", cmd->cdb[0]);
 	return TCMU_STS_NOT_HANDLED;
 }
 
@@ -2287,6 +2410,7 @@ static const char zbc_cfg_desc[] =
 	"                      The default is 1%% of the device capacity\n"
 	"  open-<num>        : Optimal (HA) or maximum (HM) number of open zones\n"
 	"                      The default is 128\n"
+	"  spdm-<port>		 : Device will connect to an SPDM responder on port"
 	"Ex:\n"
 	"  cfgstring=model-HM/zsize-128/conv-100@/var/local/zbc.raw\n"
 	"  will create a host-managed disk with 128 MiB zones and 100\n"
