@@ -2248,8 +2248,8 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
 	if (cmd->iovec->iov_len < SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE)
 		return ENOMEM;
 
-	// TODO: Fixup transport code
-	recvd = spdm_recv_response(zdev->dev, zdev->spdm_socket, 0x02,
+	recvd = spdm_recv_response(zdev->dev, zdev->spdm_socket,
+				   SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
 				   cmd->iovec->iov_base,
 				   SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE);
 
@@ -2269,17 +2269,31 @@ static int zbc_send_spdm_request(struct tcmu_device *dev,
 	struct zbc_dev *zdev = tcmur_dev_get_private(dev);
 	uint8_t *cdb = cmd->cdb;
 	uint32_t alloc_len = tcmu_cdb_get_xfer_length(cdb);
+	int bytes = tcmu_cdb_get_length(cdb);
+	uint8_t *buffer = malloc(alloc_len);
 	bool res;
 
-	if (!zdev)
-		return TCMU_STS_NOT_HANDLED;
+	if (!buffer)
+		return -ENOMEM;
 
-	if (zdev->spdm_socket <= 0)
+	if (!zdev) {
+		free(buffer);
 		return TCMU_STS_NOT_HANDLED;
+	}
 
-	// TODO: Fixup transport code
-	res = spdm_send_request(zdev->dev, zdev->spdm_socket, 0x02,
-				cmd->iovec->iov_base, alloc_len);
+	if (zdev->spdm_socket <= 0) {
+		free(buffer);
+		return TCMU_STS_NOT_HANDLED;
+	}
+
+	memcpy(buffer, cmd->cdb, bytes);
+	memcpy(buffer + bytes, cmd->iovec->iov_base, alloc_len - bytes);
+
+	res = spdm_send_request(zdev->dev, zdev->spdm_socket,
+				SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
+				buffer + 1, alloc_len - 1);
+
+	free(buffer);
 
 	if (!res) // TODO SPDM ERR
 		return TCMU_STS_NOT_HANDLED;

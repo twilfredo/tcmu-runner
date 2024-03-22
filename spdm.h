@@ -17,7 +17,8 @@ int spdm_send_request(struct tcmu_device *dev, const int socket,
 
 #define SPDM_SOCKET_TRANSPORT_TYPE_MCTP           0x01
 #define SPDM_SOCKET_TRANSPORT_TYPE_PCI_DOE        0x02
+#define SPDM_SOCKET_TRANSPORT_TYPE_SCSI           0x03
 
-#define SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE       0x1200
+#define SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE       0x2000
 
 #endif
