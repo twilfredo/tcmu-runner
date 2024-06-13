@@ -2235,7 +2235,9 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
 				  struct tcmulib_cmd *cmd)
 {
 	struct zbc_dev *zdev = tcmur_dev_get_private(dev);
-	uint32_t recvd;
+	uint32_t recvd, spdm_res;
+	uint16_t cmd_status;
+	uint8_t spsp0 = cmd->cdb[3];
 
 	if (!zdev)
 		return TCMU_STS_NOT_HANDLED;
@@ -2243,20 +2245,48 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
 	if (zdev->spdm_socket <= 0)
 		return TCMU_STS_NOT_HANDLED;
 
-	// Require an io buffer of atleast SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE
-	// to ensure receive does not overflow.
+	/*
+	 * Require an io buffer of atleast SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE
+	 * to ensure a receive does not overflow.
+	 */
 	if (cmd->iovec->iov_len < SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE)
 		return ENOMEM;
 
-	recvd = spdm_recv_response(zdev->dev, zdev->spdm_socket,
-				   SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
-				   cmd->iovec->iov_base,
-				   SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE);
+    /* Forward if_recv to the SPDM Server with SPSP0 */
+    spdm_res = spdm_socket_send(zdev->dev, zdev->spdm_socket,
+                                SPDM_SOCKET_STORAGE_CMD_IF_RECV,
+                                SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
+                                (uint8_t *)&spsp0, 1);
+
+    if (!spdm_res) {
+        return TCMU_STS_INVALID_CDB;
+    }
+
+    /* The responder shall ack with message status */
+    recvd = spdm_socket_receive(zdev->dev, zdev->spdm_socket,
+                                SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
+                                (uint8_t *)&cmd_status,
+                                SPDM_SOCKET_MAX_MSG_STATUS_LEN);
+
+    if (recvd < SPDM_SOCKET_MAX_MSG_STATUS_LEN) {
+        return TCMU_STS_INVALID_CDB;
+    }
+
+    /* An error here implies the prior if_recv from requester was spurious */
+    if (cmd_status != TCMU_STS_OK) {
+		tcmu_dev_err(dev, "SPDM Responder Error 0x{%2x}\n", cmd_status);
+        return cmd_status;
+    }
+
+    recvd = spdm_socket_receive(zdev->dev, zdev->spdm_socket,
+                                SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
+                                cmd->iovec->iov_base,
+                                SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE);
 
 	if (!recvd)
 		return TCMU_STS_NOT_HANDLED;
 
-	// Consume iovec to mimic tcmu_memcpy_into_iovec()
+	/* Consume iovec to mimic tcmu_memcpy_into_iovec() */
 	cmd->iovec->iov_base += recvd;
 	cmd->iovec->iov_len -= recvd;
 	
@@ -2271,6 +2301,7 @@ static int zbc_send_spdm_request(struct tcmu_device *dev,
 	uint32_t alloc_len = tcmu_cdb_get_xfer_length(cdb);
 	int bytes = tcmu_cdb_get_length(cdb);
 	uint8_t *buffer = malloc(alloc_len);
+	uint16_t cmd_status;
 	bool res;
 
 	if (!buffer)
@@ -2286,17 +2317,30 @@ static int zbc_send_spdm_request(struct tcmu_device *dev,
 		return TCMU_STS_NOT_HANDLED;
 	}
 
+	// We are forwarding a concatanated CDB + The SPDM Request
 	memcpy(buffer, cmd->cdb, bytes);
 	memcpy(buffer + bytes, cmd->iovec->iov_base, alloc_len - bytes);
 
-	res = spdm_send_request(zdev->dev, zdev->spdm_socket,
-				SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
-				buffer + 1, alloc_len - 1);
+	res = spdm_socket_send(zdev->dev, zdev->spdm_socket,
+                           SPDM_SOCKET_STORAGE_CMD_IF_SEND,
+                           SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
+                           buffer + 1, alloc_len - 1);
 
 	free(buffer);
 
-	if (!res) // TODO SPDM ERR
-		return TCMU_STS_NOT_HANDLED;
+	if (!res)
+		return TCMU_STS_INVALID_CDB;
+
+    /* The responder shall ack with message status */
+    res = spdm_socket_receive(zdev->dev, zdev->spdm_socket,
+                              SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
+                              (uint8_t *)&cmd_status,
+                              SPDM_SOCKET_MAX_MSG_STATUS_LEN);
+
+	if (!res || (cmd_status != TCMU_STS_OK)) {
+		tcmu_dev_err(dev, "SPDM Responder Error 0x{%2x}\n", cmd_status);
+		return TCMU_STS_INVALID_CDB;
+	}
 
 	return TCMU_STS_OK;
 }
