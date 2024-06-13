@@ -184,8 +184,9 @@ int spdm_socket_connect(struct tcmu_device *dev, uint16_t port)
     return client_socket;
 }
 
-int spdm_send_request(struct tcmu_device *dev, const int socket,
-                       uint32_t transport_type, void *req, uint32_t req_len)
+int spdm_socket_send(struct tcmu_device *dev, const int socket,
+                     uint32_t socket_cmd, uint32_t transport_type,
+                     void *req, uint32_t req_len)
 {
     bool result;
 
@@ -195,7 +196,7 @@ int spdm_send_request(struct tcmu_device *dev, const int socket,
     }
 
     result = send_platform_data(socket, transport_type,
-                                SPDM_SOCKET_COMMAND_NORMAL,
+                                socket_cmd,
                                 req, req_len);
     if (!result) {
         tcmu_dev_err(dev, "failed to send platform data\n");
@@ -205,7 +206,7 @@ int spdm_send_request(struct tcmu_device *dev, const int socket,
     return result;
 }
 
-uint32_t spdm_recv_response(struct tcmu_device *dev, const int socket,
+uint32_t spdm_socket_receive(struct tcmu_device *dev, const int socket,
                        uint32_t transport_type, void *rsp, uint32_t rsp_len)
 {
     uint32_t command;
