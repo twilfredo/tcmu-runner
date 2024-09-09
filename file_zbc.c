@@ -2235,9 +2235,10 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
 				  struct tcmulib_cmd *cmd)
 {
 	struct zbc_dev *zdev = tcmur_dev_get_private(dev);
+	struct storage_spdm_transport_hdr hdr = {0};
+	uint8_t *cdb = cmd->cdb;
 	uint32_t recvd, spdm_res;
 	uint16_t cmd_status;
-	uint8_t spsp0 = cmd->cdb[3];
 
 	if (!zdev)
 		return TCMU_STS_NOT_HANDLED;
@@ -2252,12 +2253,16 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
 	if (cmd->iovec->iov_len < SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE)
 		return ENOMEM;
 
-    /* Forward if_recv to the SPDM Server with SPSP0 */
+	hdr.security_protocol = cdb[1];
+	hdr.security_protocol_specific = htobe16((cdb[2] << 8) | cdb[3]);
+	hdr.inc_512 = ((cdb[4] >> 7) & 0x1) == 0 ? false : true;
+	hdr.length = tcmu_cdb_get_xfer_length(cdb);
+
+    /* Forward if_recv to the SPDM Server with transport header */
     spdm_res = spdm_socket_send(zdev->dev, zdev->spdm_socket,
                                 SPDM_SOCKET_STORAGE_CMD_IF_RECV,
                                 SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
-                                (uint8_t *)&spsp0, 1);
-
+                                (uint8_t *)&hdr, sizeof(hdr));
     if (!spdm_res) {
         return TCMU_STS_INVALID_CDB;
     }
@@ -2282,7 +2287,6 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
                                 SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
                                 cmd->iovec->iov_base,
                                 SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE);
-
 	if (!recvd)
 		return TCMU_STS_NOT_HANDLED;
 
@@ -2297,10 +2301,11 @@ static int zbc_send_spdm_request(struct tcmu_device *dev,
 				 struct tcmulib_cmd *cmd)
 {
 	struct zbc_dev *zdev = tcmur_dev_get_private(dev);
+	struct storage_spdm_transport_hdr hdr = {0};
 	uint8_t *cdb = cmd->cdb;
-	uint32_t alloc_len = tcmu_cdb_get_xfer_length(cdb);
-	int bytes = tcmu_cdb_get_length(cdb);
-	uint8_t *buffer = malloc(alloc_len);
+	uint32_t spdm_xfer_len = tcmu_cdb_get_xfer_length(cdb);
+	uint32_t xfer_len = spdm_xfer_len + sizeof(hdr);
+	uint8_t *buffer = malloc(xfer_len);
 	uint16_t cmd_status;
 	bool res;
 
@@ -2317,17 +2322,19 @@ static int zbc_send_spdm_request(struct tcmu_device *dev,
 		return TCMU_STS_NOT_HANDLED;
 	}
 
-	// We are forwarding a concatanated CDB + The SPDM Request
-	memcpy(buffer, cmd->cdb, bytes);
-	memcpy(buffer + bytes, cmd->iovec->iov_base, alloc_len - bytes);
+	hdr.security_protocol = cdb[1];
+	hdr.security_protocol_specific = htobe16((cdb[2] << 8) | cdb[3]);
+	hdr.inc_512 = ((cdb[4] >> 7) & 0x1) == 0 ? false : true;
+	hdr.length = htobe32(xfer_len);
+
+	memcpy(buffer, &hdr, sizeof(hdr));
+	memcpy(buffer + sizeof(hdr), cmd->iovec->iov_base, spdm_xfer_len);
 
 	res = spdm_socket_send(zdev->dev, zdev->spdm_socket,
                            SPDM_SOCKET_STORAGE_CMD_IF_SEND,
                            SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
-                           buffer + 1, alloc_len - 1);
-
+                           buffer, xfer_len);
 	free(buffer);
-
 	if (!res)
 		return TCMU_STS_INVALID_CDB;
 

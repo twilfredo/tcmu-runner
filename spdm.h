@@ -9,6 +9,17 @@ uint32_t spdm_socket_receive(struct tcmu_device *dev, const int socket,
 int spdm_socket_send(struct tcmu_device *dev, const int socket,
                      uint32_t socket_cmd, uint32_t transport_type,
                      void *req, uint32_t req_len);
+/*
+ * Defines the storage transport encoding for SPDM, this information shall be
+ * passed down to the SPDM server, when conforming to the SPDM over Storage
+ * standard as defined by DSP0286.
+ */
+struct storage_spdm_transport_hdr {
+    uint8_t security_protocol;
+    uint16_t security_protocol_specific;
+    bool inc_512;
+    uint32_t length;
+} __attribute__((__packed__));
 
 #define SPDM_SOCKET_COMMAND_NORMAL                0x0001
 #define SPDM_SOCKET_STORAGE_CMD_IF_SEND           0x0002
