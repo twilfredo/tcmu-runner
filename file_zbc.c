@@ -2246,13 +2246,6 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
 	if (zdev->spdm_socket <= 0)
 		return TCMU_STS_NOT_HANDLED;
 
-	/*
-	 * Require an io buffer of atleast SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE
-	 * to ensure a receive does not overflow.
-	 */
-	if (cmd->iovec->iov_len < SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE)
-		return ENOMEM;
-
 	hdr.security_protocol = cdb[1];
 	hdr.security_protocol_specific = htobe16((cdb[2] << 8) | cdb[3]);
 	hdr.inc_512 = ((cdb[4] >> 7) & 0x1) == 0 ? false : true;
@@ -2286,7 +2279,7 @@ static int zbc_recv_spdm_response(struct tcmu_device *dev,
     recvd = spdm_socket_receive(zdev->dev, zdev->spdm_socket,
                                 SPDM_SOCKET_TRANSPORT_TYPE_SCSI,
                                 cmd->iovec->iov_base,
-                                SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE);
+                                cmd->iovec->iov_len);
 	if (!recvd)
 		return TCMU_STS_NOT_HANDLED;
 

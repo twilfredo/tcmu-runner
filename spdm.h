@@ -32,8 +32,6 @@ struct storage_spdm_transport_hdr {
 #define SPDM_SOCKET_COMMAND_TEST                  0xDEAD
 
 #define SPDM_SOCKET_TRANSPORT_TYPE_SCSI           0x03
-
-#define SPDM_SOCKET_MAX_MESSAGE_BUFFER_SIZE       0x2000
 #define SPDM_SOCKET_MAX_MSG_STATUS_LEN            0x02
 
 #endif
